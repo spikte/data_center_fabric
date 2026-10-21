@@ -1,0 +1,45 @@
+router bgp {{ vars["as-number"] }}
+ no bgp ebgp-requires-policy
+ bgp router-id {{ vars["router-id"] }}
+
+ neighbor UNDERLAY peer-group
+{% set ns = namespace(as_set=false) %}
+{% for neighbor in vars["neighbors"] %}
+{% if hostvars[neighbor["name"]]["type"] == "spine" %}
+{% if not ns.as_set %}
+ neighbor UNDERLAY remote-as {{ hostvars[neighbor["name"]]["as-number"] }}
+{% set ns.as_set = true %}
+{% endif %}
+ neighbor {{ neighbor["ip"] }} peer-group UNDERLAY
+{% endif %}
+{% endfor %}
+
+ neighbor OVERLAY peer-group
+ neighbor OVERLAY remote-as 65000
+ neighbor OVERLAY ebgp-multihop 2
+ neighbor OVERLAY update-source {{ vars["router-id"] }}
+ {% for spine in groups["spines"] %}
+ neighbor {{ hostvars[spine]["router-id"]}} peer-group OVERLAY
+ {% endfor %}
+
+ address-family ipv4 unicast
+  neighbor UNDERLAY activate
+  no neighbor OVERLAY activate
+  network {{ vars["router-id"] }}/32
+  network {{ vars["loopback"] }}/32
+  maximum-paths 2
+ exit
+
+ address-family l2vpn evpn
+  neighbor OVERLAY activate
+  advertise-all-vni
+{% for vni in vlan_vni %}
+  vni {{ vni.vni }}
+   rd {{ vars["loopback"] }}:{{ vni.vni }}
+   route-target import 65000:{{ vni.vni }}
+   route-target export 65000:{{ vni.vni }}
+  exit-vni
+{% endfor %}
+ exit
+
+exit

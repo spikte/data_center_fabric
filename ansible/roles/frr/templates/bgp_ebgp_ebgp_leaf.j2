@@ -1,0 +1,36 @@
+router bgp {{ vars["as-number"] }}
+ no bgp ebgp-requires-policy
+ bgp router-id {{ vars["router-id"] }}
+
+ neighbor SPINE peer-group
+{% set ns = namespace(as_set=false) %}
+{% for neighbor in vars["neighbors"] %}
+{% if hostvars[neighbor["name"]]["type"] == "spine" %}
+{% if not ns.as_set %}
+ neighbor SPINE remote-as {{ hostvars[neighbor["name"]]["as-number"] }}
+{% set ns.as_set = true %}
+{% endif %}
+ neighbor {{ neighbor["ip"] }} peer-group SPINE
+{% endif %}
+{% endfor %}
+
+ address-family ipv4 unicast
+  neighbor SPINE activate
+  network {{ vars["router-id"] }}/32
+  network {{ vars["loopback"] }}/32
+  maximum-paths 2
+ exit
+
+ address-family l2vpn evpn
+  neighbor SPINE activate
+  advertise-all-vni
+{% for vni in vlan_vni %}
+  vni {{ vni.vni }}
+   rd {{ loopback }}:{{ vni.vni }}
+   route-target import 65000:{{ vni.vni }}
+   route-target export 65000:{{ vni.vni }}
+  exit
+{% endfor %}
+ exit
+
+exit

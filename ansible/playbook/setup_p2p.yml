@@ -1,0 +1,22 @@
+- name: Configure point to point link servers
+  hosts: servers
+  become: true
+  tasks:
+    - name: Configure P2P address
+      ansible.builtin.command:
+        cmd: ip addr add {{ item.1.ip }} dev {{ item.1.interface }}
+      loop: "{{ p2p_links | subelements('endpoints') }}"
+      loop_control:
+        label: "{{ item.1.host }} - {{ item.1.interface }}"
+      when: item.1.host == inventory_hostname
+
+- name: Configure point to point MTU
+  hosts: spines:leafs:servers
+  tasks:
+    - name: Configure point to point MTU
+      ansible.builtin.command:
+        cmd: ip link set dev {{ item.1.interface }} mtu {{ item.0.mtu }}
+      loop: "{{ p2p_links | subelements('endpoints') }}"
+      loop_control:
+        label: "{{ item.1.host }} - {{ item.1.interface }}"
+      when: item.1.host == inventory_hostname

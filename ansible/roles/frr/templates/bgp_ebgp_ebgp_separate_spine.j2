@@ -1,0 +1,39 @@
+router bgp {{ vars["as-number"] }}
+ no bgp ebgp-requires-policy
+ bgp router-id {{ vars["router-id"] }}
+
+ neighbor LEAF-UNDERLAY peer-group
+{% for neighbor in vars["neighbors"] %}
+{% if hostvars[neighbor["name"]]["type"] == "leaf" %}
+ neighbor {{ neighbor["ip"] }} peer-group LEAF-UNDERLAY
+ neighbor {{ neighbor["ip"] }} remote-as {{ hostvars[neighbor["name"]]["as-number"]}}
+{% endif %}
+{% endfor %}
+
+ neighbor LEAF-OVERLAY peer-group
+ neighbor LEAF-OVERLAY ebgp-multihop 2
+ neighbor LEAF-OVERLAY update-source {{ vars["router-id"] }}
+{% for neighbor in vars["neighbors"] %}
+{% if hostvars[neighbor["name"]]["type"] == "leaf" %}
+ neighbor {{ hostvars[neighbor["name"]]["router-id"] }} peer-group LEAF-OVERLAY
+ neighbor {{ hostvars[neighbor["name"]]["router-id"] }} remote-as {{ hostvars[neighbor["name"]]["as-number"]}}
+{% endif %}
+{% endfor %}
+
+ address-family ipv4 unicast
+  neighbor LEAF-UNDERLAY activate
+  no neighbor LEAF-OVERLAY activate
+  network {{ vars["router-id"] }}/32
+ exit
+
+ address-family l2vpn evpn
+  neighbor LEAF-OVERLAY activate
+  no neighbor LEAF-UNDERLAY activate
+  neighbor LEAF-OVERLAY route-map KEEP-NH out
+ exit
+
+exit
+
+route-map KEEP-NH permit 10
+ set ip next-hop unchanged
+exit

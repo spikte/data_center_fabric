@@ -1,0 +1,79 @@
+#SPDX-License-Identifier: MIT-0
+---
+- name: Create FRR config file
+  ansible.builtin.template:
+    src: frr.conf.j2
+    dest: /etc/frr/frr.conf
+    owner: frr
+    group: frr
+
+- name: Create vtysh config file
+  ansible.builtin.template:
+    src: vtysh.conf.j2
+    dest: /etc/frr/vtysh.conf
+    owner: frr
+    group: frr
+
+- name: Configure FRR daemons
+  ansible.builtin.template:
+    src: frr_daemons.j2
+    dest: /etc/frr/daemons
+    owner: frr
+    group: frr
+    mode: "0640"
+  notify:
+    - Reload daemons
+    - Reload frr.conf
+
+- name: Setup L2VNI
+  ansible.builtin.shell:
+    cmd: |
+      if ! ip link show "br{{ item.vlan }}" >/dev/null 2>&1; then
+        ip link add "br{{ item.vlan }}" type bridge
+      fi
+
+      if ! ip link show "{{ item.interface }}.{{ item.vlan }}" >/dev/null 2>&1; then
+        ip link add link "{{ item.interface }}" name "{{ item.interface }}.{{ item.vlan }}" type vlan id "{{ item.vlan }}"
+      fi
+      ip link set "{{ item.interface }}.{{ item.vlan }}" master "br{{ item.vlan }}"
+      ip link set "{{ item.interface }}.{{ item.vlan }}" up
+
+      if ! ip link show "vxlan{{ item.vni }}" >/dev/null 2>&1; then
+        ip link add "vxlan{{ item.vni }}" type vxlan id "{{ item.vni }}" local "{{ loopback }}" dstport 4789 nolearning
+      fi
+      ip link set "vxlan{{ item.vni }}" master "br{{ item.vlan }}"
+      if ! bridge vlan show dev "vxlan{{ item.vni }}" | grep -qw "{{ item.vlan }}"; then
+          bridge vlan add dev "vxlan{{ item.vni }}" vid "{{ item.vlan }}" pvid untagged
+      fi
+      bridge link set dev "vxlan{{ item.vni }}" neigh_suppress on
+
+      ip link set "br{{ item.vlan }}" up
+      ip link set "vxlan{{ item.vni }}" up
+      ip link set "{{ item.interface }}.{{ item.vlan }}" up
+  become: true
+  loop: "{{ vlan_vni }}"
+  loop_control:
+    label: "L2VNI: {{ item.interface }} VLAN {{ item.vlan }} <=> VNI {{ item.vni }}"
+  when: type == "leaf"
+
+- name: Setup L3VNI
+  ansible.builtin.shell:
+    cmd: |
+      ip link add "vrf{{ item['tenant-name'] }}" type vrf table "{{ item['tenant-id']}}"
+      ip link set "vrf{{ item['tenant-name'] }}" up
+
+      ip link add "br{{ item['tenant-vni-id']}}" type bridge
+      ip link set "br{{ item['tenant-vni-id']}}" master "vrf{{ item['tenant-name'] }}"
+      ip link add "vxlan{{ item['tenant-vni-id']}}" type vxlan id "{{ item['tenant-vni-id']}}" local "{{ loopback }}" dstport 4789 nolearning
+      ip link set "vxlan{{ item['tenant-vni-id']}}" master "br{{ item['tenant-vni-id']}}"
+      ip link set "br{{ item['tenant-vni-id']}}"  up
+      ip link set "vxlan{{ item['tenant-vni-id']}}"  up
+
+      ip link set "br{{ item.vlan }}" master "vrf{{ item['tenant-name'] }}"
+      ip link set "br{{ item.vlan }}" address "{{ item['l3vni-mac']}}"
+      ip addr add "{{ item['l3vni-ip'] }}" dev "br{{ item.vlan }}"
+  become: true
+  loop: "{{ vlan_vni }}"
+  loop_control:
+    label: "L3VNI: {{ item.interface }} VLAN {{ item.vlan }} <=> VNI {{ item.vni }}"
+  when: type == "leaf"

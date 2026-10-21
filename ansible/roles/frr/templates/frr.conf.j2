@@ -1,0 +1,53 @@
+{% for name, properties in interfaces.items() %}
+interface {{ name }}
+ ip address {{ properties["ip"] }}/{{ properties["prefix"] }}
+exit
+{% endfor %}
+
+interface lo
+    ip address {{ loopback }}/32
+exit
+
+
+
+{% if overlay == "eBGP" %}
+
+{% if ebgp_same_session == true %}
+
+{% if type == "spine" %}
+{% include "bgp_ebgp_ebgp_spine.j2" %}
+{% elif type == "leaf" %}
+{% include "bgp_ebgp_ebgp_leaf.j2" %}
+{% endif %}
+
+{% else %}
+
+{% if type == "spine" %}
+{% include "bgp_ebgp_ebgp_separate_spine.j2" %}
+{% elif type == "leaf" %}
+{% include "bgp_ebgp_ebgp_separate_leaf.j2" %}
+{% endif %}
+
+{% endif %}
+
+{% elif overlay == "iBGP" %}
+
+{% endif %}
+
+{% if type == "leaf" %}
+{% for vni in vlan_vni %}
+vrf vrf{{ vni["tenant-name"] }}
+ vni {{ vni["tenant-vni-id"] }}
+exit-vrf
+router bgp {{ vars["as-number"] }} vrf vrf{{ vni["tenant-name"] }}
+ address-family ipv4 unicast
+  redistribute connected
+ exit-address-family
+ address-family l2vpn evpn
+  advertise ipv4 unicast
+  route-target import 65000:{{ vni["tenant-id"] }}
+  route-target export 65000:{{ vni["tenant-id"] }}
+ exit-address-family
+exit
+{% endfor %}
+{% endif %}

@@ -1,0 +1,39 @@
+#SPDX-License-Identifier: MIT-0
+---
+daemons:
+  bgpd:
+    active: "yes"
+  ospfd:
+    active: "no"
+  ospf6d:
+    active: "no"
+  ripd:
+    active: "no"
+  ripngd:
+    active: "no"
+  isisd:
+    active: "no"
+  pimd:
+    active: "no"
+  pim6d:
+    active: "no"
+  ldpd:
+    active: "no"
+  nhrpd:
+    active: "no"
+  eigrpd:
+    active: "no"
+  babeld:
+    active: "no"
+  sharpd:
+    active: "no"
+  pbrd:
+    active: "no"
+  bfdd:
+    active: "yes"
+  fabricd:
+    active: "no"
+  vrrpd:
+    active: "no"
+  pathd:
+    active: "no"

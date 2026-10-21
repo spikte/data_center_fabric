@@ -1,0 +1,19 @@
+#SPDX-License-Identifier: MIT-0
+---
+- name: Reload daemons
+  ansible.builtin.command:
+    cmd: >-
+      /usr/lib/frr/watchfrr.sh
+      {{ 'start' if item.value.active == 'yes' else 'stop' }}
+      {{ item.key }}
+  loop: "{{ daemons | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: true
+  failed_when: false
+  become: true
+
+- name: Reload frr.conf
+  ansible.builtin.command:
+    cmd: /etc/init.d/frr reload
+  become: true

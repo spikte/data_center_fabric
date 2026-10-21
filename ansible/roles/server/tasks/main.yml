@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: MIT-0
+---
+- name: Create Docker containers
+  become: true
+  community.docker.docker_container:
+    name: "{{ inventory_hostname }}-{{ item.tenant_name | lower }}-vlan{{ item.vlan }}"
+    image: nicolaka/netshoot
+    command: ["sleep", "infinity"]
+    state: started
+    network_mode: none
+  loop: "{{ vm }}"
+  loop_control:
+    label: "Tenant {{ item.tenant_name }} VLAN {{ item.vlan }}"
+
+
+- name: Create the VLAN-aware virtual switch
+  become: true
+  ansible.builtin.shell: |
+    if ! ip link show br0 >/dev/null 2>&1; then
+      ip link add br0 type bridge vlan_filtering 1 vlan_default_pvid 0
+    fi
+    ip link set dev br0 type bridge vlan_filtering 1
+    ip link set dev br0 up
+    ip link set eth1 master br0
+
+  changed_when: false
+
+
+- name: Allow tenant VLANs on the physical trunk
+  become: true
+  ansible.builtin.shell: |
+    bridge vlan add dev eth1 vid "{{ item.vlan }}"
+  loop: "{{ vm }}"
+  loop_control:
+    label: "Allow VLAN {{ item.vlan }} on eth1"
+
+
+- name: Connect containers to the virtual switch
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+
+    PID=$(docker inspect -f '{{ "{{" }}.State.Pid{{ "}}" }}' "$CONTAINER")
+    if [ "$PID" -le 0 ]; then
+      echo "Container is not running: $CONTAINER" >&2
+      exit 1
+    fi
+
+    if nsenter -t "$PID" -n ip -o addr show dev vc"{{ item.vlan }}" 2>/dev/null | grep -qw "{{ item.ip }}"; then
+      echo unchanged; exit 0
+    fi
+
+    if ! ip link show vh"{{ item.vlan }}" >/dev/null 2>&1; then
+      ip link add vh"{{ item.vlan }}" type veth peer name vc"{{ item.vlan }}"
+    fi
+
+    ip link set vh"{{ item.vlan }}" up
+    ip link set vc"{{ item.vlan }}" up
+
+    ip link set vh"{{item.vlan}}" master br0
+    bridge vlan add dev vh"{{ item.vlan }}" vid "{{ item.vlan }}" pvid untagged
+
+    ip link set vc"{{ item.vlan }}" netns "$PID"
+    nsenter -t "$PID" -n ip link set vc"{{ item.vlan }}" up
+    nsenter -t "$PID" -n ip addr add "{{ item.ip }}" dev vc"{{ item.vlan }}"
+    nsenter -t "$PID" -n ip route replace default via "{{ item.gateway }}"
+
+    echo changed
+  environment:
+    CONTAINER: "{{ inventory_hostname }}-{{ item.tenant_name | lower }}-vlan{{ item.vlan }}"
+  register: result
+  loop: "{{ vm }}"
+  loop_control:
+    label: "Tenant {{ item.tenant_name }} VLAN {{ item.vlan }}"
+  changed_when: "'changed' in result.stdout"

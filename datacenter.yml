@@ -1,0 +1,22 @@
+name: data-center
+mgmt-subnet: 172.16.0.0/22
+servers: 7
+spines: 2
+underlay: eBGP
+overlay: eBGP
+samesession: false
+redundant-server-leaf-link: 0
+
+tenants:
+  - name: A
+    segments:
+      - vlan: 10
+        hosts: ["server1", "server2", "server3", "server4"]
+      - vlan: 20
+        hosts: ["server1", "server2", "server3", "server4"]
+  - name: B
+    segments:
+      - vlan: 110
+        hosts: ["server1", "server2", "server3", "server4"]
+      - vlan: 120
+        hosts: ["server1", "server2", "server3", "server4"]

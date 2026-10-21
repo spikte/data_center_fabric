@@ -1,0 +1,6 @@
+clab-data-center/*
+Datacenter_Fabric_Worklab.pdf
+datacenter.clab.yml
+todo.md
+ansible/inventory/*
+controller/dc_controller
