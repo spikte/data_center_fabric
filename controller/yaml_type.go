@@ -1,9 +1,9 @@
 package main
 
 import (
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
-	"gopkg.in/yaml.v3"
 )
 
 type YMLSegment struct {
@@ -16,13 +16,15 @@ type YMLTenant struct {
 }
 type YMLConfig struct {
 	Name                   string
-	ManagementSubnet       string
+	ManagementSubnet       string `yaml:"mgmt-subnet"`
 	Servers                int
+	Leafs                  int
+	MaxServerPerLeaf       int `yaml:"max-server-per-leaf"`
 	Spines                 int
 	Underlay               string
 	Overlay                string
 	SameSession            bool
-	RedudantServerLeafLink int
+	RedudantServerLeafLink int `yaml:"redundant-server-uplink"`
 	Tenants                []YMLTenant
 }
 

@@ -71,7 +71,9 @@
 
       ip link set "br{{ item.vlan }}" master "vrf{{ item['tenant-name'] }}"
       ip link set "br{{ item.vlan }}" address "{{ item['l3vni-mac']}}"
-      ip addr add "{{ item['l3vni-ip'] }}" dev "br{{ item.vlan }}"
+      if ! ip -br addr show dev "br{{ item.vlan }}" | grep -qw "{{ item['l3vni-ip']}}"; then
+        ip addr add "{{ item['l3vni-ip'] }}" dev "br{{ item.vlan }}"
+      fi
   become: true
   loop: "{{ vlan_vni }}"
   loop_control:

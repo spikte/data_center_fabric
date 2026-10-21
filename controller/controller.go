@@ -25,19 +25,20 @@ func run(dir, name string, args ...string) error {
 
 // Topology
 type DCTopology struct {
-	Name        string
-	Spines      []Router
-	Leafs       []Router
-	Servers     []Server
-	Spines2Id   map[string]int
-	Leafs2Id    map[string]int
-	Servers2Id  map[string]int
-	Topology    Graph
-	Links       []NetworkLink
-	Underlay    string
-	Overlay     string
-	SameSession bool
-	ClabPath    string
+	Name             string
+	Spines           []Router
+	Leafs            []Router
+	Servers          []Server
+	Spines2Id        map[string]int
+	Leafs2Id         map[string]int
+	Servers2Id       map[string]int
+	Topology         Graph
+	Links            []NetworkLink
+	Underlay         string
+	Overlay          string
+	MaxServerPerLeaf int
+	SameSession      bool
+	ClabPath         string
 }
 
 func NewDCTopology() DCTopology {
@@ -98,7 +99,7 @@ func (topology *DCTopology) FillData(config YMLConfig) {
 		globalId++
 		topology.Topology.AddNode(name)
 	}
-	for i := 0; i < config.Servers; i++ {
+	for i := 0; i < config.Leafs; i++ {
 		name := fmt.Sprintf("leaf%d", i+1)
 		topology.AddLeaf(Router{
 			NetEl: NetworkElement{
@@ -130,8 +131,10 @@ func (topology *DCTopology) FillData(config YMLConfig) {
 	}
 }
 func (topology *DCTopology) FillLink() {
+	currentServer := 0
 	for i := range topology.Leafs {
 		leaf := &topology.Leafs[i]
+		// Connect to all spines
 		for j := range topology.Spines {
 			spine := &topology.Spines[j]
 			// Add the edge to the graph topology
@@ -168,43 +171,45 @@ func (topology *DCTopology) FillLink() {
 			leaf.NetEl.Neighbors = append(leaf.NetEl.Neighbors, &link)
 			spine.NetEl.Neighbors = append(spine.NetEl.Neighbors, &link)
 		}
-	}
-	for name, _ := range topology.Servers {
-		server := &topology.Servers[name]
-		leaf := &topology.Leafs[name]
-
-		topology.Topology.AddEdgeLabel(leaf.NetEl.Name, server.NetEl.Name)
-		// Interface name
-		intLeafId := len(leaf.NetEl.Interfaces) + 1
-		intServerId := len(server.NetEl.Interfaces) + 1
-		intLeaf := fmt.Sprintf("eth%d", intLeafId)
-		intServer := fmt.Sprintf("eth%d", intServerId)
-		// Interface P2P address
-		ipLeaf := netip.MustParsePrefix(fmt.Sprintf("10.%d.%d.1/31", 10+leaf.NetEl.Id, server.NetEl.Id))
-		ipServer := netip.MustParsePrefix(fmt.Sprintf("10.%d.%d.0/31", 10+leaf.NetEl.Id, server.NetEl.Id))
-		// Add interface to the nodes
-		server.NetEl.Interfaces = append(server.NetEl.Interfaces, Interface{
-			Name: intServer,
-			MTU:  1500,
-			IP:   ipServer,
-		})
-		leaf.NetEl.Interfaces = append(leaf.NetEl.Interfaces, Interface{
-			Name: intLeaf,
-			MTU:  1500,
-			IP:   ipLeaf,
-		})
-		// Create the link and add it to the topology and nodes
-		link := NetworkLink{
-			HostA:        server.NetEl.Name,
-			InterfaceA:   intServer,
-			InterfaceAId: intServerId - 1,
-			HostB:        leaf.NetEl.Name,
-			InterfaceB:   intLeaf,
-			InterfaceBId: intLeafId - 1,
+		// Connect to servers
+		k := 0
+		for currentServer+k < len(topology.Servers) && k < topology.MaxServerPerLeaf {
+			server := &topology.Servers[currentServer+k]
+			topology.Topology.AddEdgeLabel(leaf.NetEl.Name, server.NetEl.Name)
+			// Interface name
+			intLeafId := len(leaf.NetEl.Interfaces) + 1
+			intServerId := len(server.NetEl.Interfaces) + 1
+			intLeaf := fmt.Sprintf("eth%d", intLeafId)
+			intServer := fmt.Sprintf("eth%d", intServerId)
+			// Interface P2P address
+			ipLeaf := netip.MustParsePrefix(fmt.Sprintf("10.%d.%d.1/31", 10+leaf.NetEl.Id, server.NetEl.Id))
+			ipServer := netip.MustParsePrefix(fmt.Sprintf("10.%d.%d.0/31", 10+leaf.NetEl.Id, server.NetEl.Id))
+			// Add interface to the nodes
+			server.NetEl.Interfaces = append(server.NetEl.Interfaces, Interface{
+				Name: intServer,
+				MTU:  1500,
+				IP:   ipServer,
+			})
+			leaf.NetEl.Interfaces = append(leaf.NetEl.Interfaces, Interface{
+				Name: intLeaf,
+				MTU:  1500,
+				IP:   ipLeaf,
+			})
+			// Create the link and add it to the topology and nodes
+			link := NetworkLink{
+				HostA:        server.NetEl.Name,
+				InterfaceA:   intServer,
+				InterfaceAId: intServerId - 1,
+				HostB:        leaf.NetEl.Name,
+				InterfaceB:   intLeaf,
+				InterfaceBId: intLeafId - 1,
+			}
+			topology.Links = append(topology.Links, link)
+			leaf.NetEl.Neighbors = append(leaf.NetEl.Neighbors, &link)
+			server.NetEl.Neighbors = append(server.NetEl.Neighbors, &link)
+			k++
 		}
-		topology.Links = append(topology.Links, link)
-		leaf.NetEl.Neighbors = append(leaf.NetEl.Neighbors, &link)
-		server.NetEl.Neighbors = append(server.NetEl.Neighbors, &link)
+		currentServer += k
 	}
 }
 func (topology *DCTopology) FillVlan(config YMLConfig) {
@@ -555,11 +560,17 @@ func main() {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		panic(err)
 	}
+	if config.Servers/config.Leafs > config.MaxServerPerLeaf {
+		fmt.Fprintf(os.Stderr, "Not enough leaf for the number of servers or max-server-per-leaf too low\n")
+		os.Exit(1)
+	}
+
 	topology := NewDCTopology()
 	topology.Name = config.Name
 	topology.Underlay = config.Underlay
 	topology.Overlay = config.Overlay
 	topology.SameSession = config.SameSession
+	topology.MaxServerPerLeaf = config.MaxServerPerLeaf
 	topology.ClabPath = strings.TrimSuffix(*path, ".yml") + ".clab.yml"
 	topology.FillData(config)
 	topology.FillLink()
