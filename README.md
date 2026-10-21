@@ -33,11 +33,13 @@ First configure the datacenter as you wish in a `.yml` file:
 name: data-center
 mgmt-subnet: 172.16.0.0/22
 servers: 7
+leafs: 4
+max-server-per-leaf: 4
 spines: 2
 underlay: eBGP
 overlay: eBGP
 samesession: false
-redundant-server-leaf-link: 0
+redundant-server-uplink: 0
 
 tenants:
   - name: A
