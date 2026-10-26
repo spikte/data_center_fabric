@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"golang.org/x/crypto/ssh"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -28,6 +29,22 @@ type NetworkElement struct {
 	Interfaces     []Interface
 	Neighbors      []*NetworkLink
 	ManagementAddr netip.Prefix
+	SSHClient      *ssh.Client
+}
+
+func (netEl *NetworkElement) ConnectSSH() error {
+	client, err := connectSSH("root", netEl.ManagementAddr.Addr().String())
+	if err != nil {
+		return err
+	}
+	netEl.SSHClient = client
+	return nil
+}
+func (netEl *NetworkElement) Run(dir string, name string, args ...string) error {
+	return runSSH(netEl.SSHClient, dir, name, args...)
+}
+func (netEl *NetworkElement) RunExplicit(dir string, stdin *os.File, stdout *os.File, stderr *os.File, name string, args ...string) error {
+	return runSSHExplicit(netEl.SSHClient, dir, stdin, stdout, stderr, name, args...)
 }
 
 func (netEl *NetworkElement) RemoveSSHHost() error {
@@ -73,6 +90,7 @@ type VM struct {
 	Prefix      int
 }
 type Server struct {
-	NetEl NetworkElement
-	VMs   []VM
+	NetEl   NetworkElement
+	VMs     []VM
+	Name2VM map[string]int
 }

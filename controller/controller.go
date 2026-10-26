@@ -7,23 +7,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
-func run(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
-}
-
-// Topology
+/* Topology */
 type DCTopology struct {
 	Name             string
 	Spines           []Router
@@ -38,6 +28,7 @@ type DCTopology struct {
 	Overlay          string
 	MaxServerPerLeaf int
 	SameSession      bool
+	Config           YMLConfig
 	ClabPath         string
 }
 
@@ -49,6 +40,8 @@ func NewDCTopology() DCTopology {
 		Servers2Id: make(map[string]int),
 	}
 }
+
+// Getters
 func (topology *DCTopology) GetSpine(name string) *Router {
 	return &topology.Spines[topology.Spines2Id[name]]
 }
@@ -58,6 +51,18 @@ func (topology *DCTopology) GetLeaf(name string) *Router {
 func (topology *DCTopology) GetServer(name string) *Server {
 	return &topology.Servers[topology.Servers2Id[name]]
 }
+func (topology *DCTopology) GetNetEl(name string) *NetworkElement {
+	if strings.HasPrefix(name, "spine") {
+		return &topology.GetSpine(name).NetEl
+	} else if strings.HasPrefix(name, "leaf") {
+		return &topology.GetLeaf(name).NetEl
+	} else if strings.HasPrefix(name, "server") {
+		return &topology.GetServer(name).NetEl
+	}
+	return nil
+}
+
+// Add
 func (topology *DCTopology) AddSpine(spine Router) {
 	topology.Spines = append(topology.Spines, spine)
 	topology.Spines2Id[spine.NetEl.Name] = len(topology.Spines) - 1
@@ -70,16 +75,8 @@ func (topology *DCTopology) AddServer(server Server) {
 	topology.Servers = append(topology.Servers, server)
 	topology.Servers2Id[server.NetEl.Name] = len(topology.Servers) - 1
 }
-func (topology *DCTopology) GetNetEl(name string) *NetworkElement {
-	if strings.HasPrefix(name, "spine") {
-		return &topology.GetSpine(name).NetEl
-	} else if strings.HasPrefix(name, "leaf") {
-		return &topology.GetLeaf(name).NetEl
-	} else if strings.HasPrefix(name, "server") {
-		return &topology.GetServer(name).NetEl
-	}
-	return nil
-}
+
+// YAML -> Topology
 func (topology *DCTopology) FillData(config YMLConfig) {
 	globalId := 1
 	for i := 0; i < config.Spines; i++ {
@@ -125,6 +122,7 @@ func (topology *DCTopology) FillData(config YMLConfig) {
 				Id:             i + 1,
 				ManagementAddr: netip.MustParsePrefix(fmt.Sprintf("172.16.2.%d/32", i+1)),
 			},
+			Name2VM: make(map[string]int),
 		})
 		globalId++
 		topology.Topology.AddNode(name)
@@ -232,6 +230,7 @@ func (topology *DCTopology) FillVlan(config YMLConfig) {
 					Gateway:     gateway,
 					Prefix:      24,
 				})
+				server.Name2VM[fmt.Sprintf("%s-%s-vlan%d", serverName, strings.ToLower(tenant.Name), segment.VLAN)] = len(server.VMs) - 1
 				tenantIP = tenantIP.Next()
 				// Leaf
 				for _, link := range server.NetEl.Neighbors {
@@ -259,6 +258,8 @@ func (topology *DCTopology) FillVlan(config YMLConfig) {
 		}
 	}
 }
+
+// Topology -> containerlab
 func (topology *DCTopology) WriteContainerLab(path string) {
 	content := map[string]any{
 		"name": topology.Name,
@@ -314,6 +315,8 @@ func (topology *DCTopology) WriteContainerLab(path string) {
 
 	writeYAML(content, path)
 }
+
+// Topology -> Ansible
 func (topology *DCTopology) WriteAnsibleInventoryHosts(path string) {
 	content := map[string]any{
 		"all": map[string]any{
@@ -468,7 +471,7 @@ func (topology *DCTopology) WriteAnsibleInventoryHostVars(path string) {
 }
 
 func (topology *DCTopology) Build() error {
-	topology.WriteContainerLab("./datacenter.clab.yml")
+	topology.WriteContainerLab(topology.ClabPath)
 	topology.WriteAnsibleInventoryHosts("./ansible/inventory/hosts.yml")
 	topology.WriteAnsibleInventoryP2P("./ansible/inventory/group_vars/all.yml")
 	topology.WriteAnsibleInventoryHostVars("./ansible/inventory/host_vars/")
@@ -535,10 +538,187 @@ func (topology *DCTopology) Stop() {
 	}
 }
 
+// Test
+func (topology *DCTopology) ConnectSSHAll() error {
+	for i := range topology.Spines {
+		spine := &topology.Spines[i]
+		if err := spine.NetEl.ConnectSSH(); err != nil {
+			return err
+		}
+	}
+	for i := range topology.Leafs {
+		leaf := &topology.Leafs[i]
+		if err := leaf.NetEl.ConnectSSH(); err != nil {
+			return err
+		}
+	}
+	for i := range topology.Servers {
+		server := &topology.Servers[i]
+		if err := server.NetEl.ConnectSSH(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func TestPing(netEl1 *NetworkElement, ip1 string, netEl2 *NetworkElement, ip2 string) {
+	err := netEl1.RunExplicit(".", nil, nil, os.Stderr, "ping", "-I", ip1, "-c", "3", ip2)
+	fmt.Printf("	%s(%s) -> %s(%s): ", netEl1.Name, ip1, netEl2.Name, ip2)
+	if err != nil {
+		fmt.Printf("ERROR")
+	} else {
+		fmt.Printf("OK")
+	}
+	fmt.Printf("\n")
+
+	err = netEl2.RunExplicit(".", nil, nil, os.Stderr, "ping", "-I", ip2, "-c", "3", ip1)
+	fmt.Printf("	%s(%s) -> %s(%s): ", netEl2.Name, ip2, netEl1.Name, ip1)
+	if err != nil {
+		fmt.Printf("ERROR")
+	} else {
+		fmt.Printf("OK")
+	}
+	fmt.Printf("\n")
+}
+
+type PingJob struct {
+	Src   *NetworkElement
+	SrcIP string
+	Dst   *NetworkElement
+	DstIP string
+}
+
+func runPings(jobs []PingJob) {
+	var wg sync.WaitGroup
+	for _, job := range jobs {
+		wg.Go(func() {
+			if err := job.Src.RunExplicit(".", nil, nil, os.Stderr, "ping", "-I", job.SrcIP, "-c", "3", job.DstIP); err != nil {
+				fmt.Printf("  %s(%s) -> %s(%s): ERROR (%v)\n", job.Src.Name, job.SrcIP, job.Dst.Name, job.DstIP, err)
+			} else {
+				fmt.Printf("  %s(%s) -> %s(%s): OK\n", job.Src.Name, job.SrcIP, job.Dst.Name, job.DstIP)
+			}
+		})
+	}
+	wg.Wait()
+}
+func (topology *DCTopology) TestPingP2P() {
+	fmt.Printf("Ping P2P:\n")
+	jobs := []PingJob{}
+	for _, spine := range topology.Spines {
+		for _, leaf := range topology.Leafs {
+			// Get P2P ip
+			ipSpine := netip.AddrFrom4([4]byte{10, byte(spine.NetEl.Id), byte(leaf.NetEl.Id), 0})
+			ipLeaf := netip.AddrFrom4([4]byte{10, byte(spine.NetEl.Id), byte(leaf.NetEl.Id), 1})
+			jobs = append(jobs, PingJob{
+				Src:   &spine.NetEl,
+				SrcIP: ipSpine.String(),
+				Dst:   &leaf.NetEl,
+				DstIP: ipLeaf.String(),
+			})
+			jobs = append(jobs, PingJob{
+				Src:   &leaf.NetEl,
+				SrcIP: ipLeaf.String(),
+				Dst:   &spine.NetEl,
+				DstIP: ipSpine.String(),
+			})
+		}
+	}
+	runPings(jobs)
+}
+func (topology *DCTopology) TestPingVTEPLoopback() {
+	fmt.Printf("Ping VTEP Loopback:\n")
+	jobs := []PingJob{}
+	for i, leaf1 := range topology.Leafs {
+		for j, leaf2 := range topology.Leafs {
+			if i == j {
+				continue
+			}
+			jobs = append(jobs, PingJob{
+				Src:   &leaf1.NetEl,
+				SrcIP: leaf1.Loopback.Addr().String(),
+				Dst:   &leaf2.NetEl,
+				DstIP: leaf2.Loopback.Addr().String(),
+			})
+			jobs = append(jobs, PingJob{
+				Src:   &leaf2.NetEl,
+				SrcIP: leaf2.Loopback.Addr().String(),
+				Dst:   &leaf1.NetEl,
+				DstIP: leaf1.Loopback.Addr().String(),
+			})
+		}
+	}
+	runPings(jobs)
+}
+
+type VMPingJob struct {
+	ServerSrc  *Server
+	ServerDst  *Server
+	TenantName string
+	Vlan       int
+}
+
+func runVMPings(jobs []VMPingJob) {
+	var wg sync.WaitGroup
+	for _, job := range jobs {
+		wg.Go(func() {
+			vmSrc := fmt.Sprintf("server%d-%s-vlan%d", job.ServerSrc.NetEl.Id, strings.ToLower(job.TenantName), job.Vlan)
+			vmDst := fmt.Sprintf("server%d-%s-vlan%d", job.ServerDst.NetEl.Id, strings.ToLower(job.TenantName), job.Vlan)
+			ipSrc := job.ServerSrc.VMs[job.ServerSrc.Name2VM[vmSrc]].IP
+			ipDst := job.ServerDst.VMs[job.ServerDst.Name2VM[vmDst]].IP
+			if err := job.ServerSrc.NetEl.RunExplicit(".", nil, nil, os.Stderr, "docker", "exec", vmSrc, "ping", ipDst.String(), "-c", "3"); err != nil {
+				fmt.Printf("    %s:%s(%s) -> %s:%s(%s): ERROR (%v)\n", job.ServerSrc.NetEl.Name, vmSrc, ipSrc, job.ServerDst.NetEl.Name, vmDst, ipDst, err)
+			} else {
+				fmt.Printf("    %s:%s(%s) -> %s:%s(%s): OK\n", job.ServerSrc.NetEl.Name, vmSrc, ipSrc, job.ServerDst.NetEl.Name, vmDst, ipDst)
+			}
+		})
+	}
+	wg.Wait()
+}
+func (topology *DCTopology) TestPingSameTenantSameVlan() {
+	fmt.Printf("Ping same tenant/same vlan\n")
+	for _, tenant := range topology.Config.Tenants {
+		for _, segment := range tenant.Segments {
+			fmt.Printf("  Tenant %s VLAN %d\n", tenant.Name, segment.VLAN)
+			jobs := []VMPingJob{}
+			for i, server1Name := range segment.Hosts {
+				for j := i + 1; j < len(segment.Hosts); j++ {
+					server2Name := segment.Hosts[j]
+					server1 := topology.GetServer(server1Name)
+					server2 := topology.GetServer(server2Name)
+					if i == j {
+						continue
+					}
+					jobs = append(jobs, VMPingJob{
+						ServerSrc:  server1,
+						ServerDst:  server2,
+						TenantName: tenant.Name,
+						Vlan:       segment.VLAN,
+					})
+					jobs = append(jobs, VMPingJob{
+						ServerSrc:  server2,
+						ServerDst:  server1,
+						TenantName: tenant.Name,
+						Vlan:       segment.VLAN,
+					})
+				}
+			}
+			runVMPings(jobs)
+		}
+	}
+}
+
+func (topology *DCTopology) Test() {
+	if err := topology.ConnectSSHAll(); err != nil {
+		panic(err)
+	}
+	topology.TestPingP2P()
+	topology.TestPingVTEPLoopback()
+	topology.TestPingSameTenantSameVlan()
+}
+
 func main() {
 	path := flag.String("path", "", "Configuration file path")
 	action := flag.String("action", "", "Action to do")
-	allowedAction := []string{"Build", "Start", "Stop", "Restart"}
+	allowedAction := []string{"Build", "Start", "Stop", "Restart", "Test"}
 
 	flag.Parse()
 
@@ -566,6 +746,7 @@ func main() {
 	}
 
 	topology := NewDCTopology()
+	topology.Config = config
 	topology.Name = config.Name
 	topology.Underlay = config.Underlay
 	topology.Overlay = config.Overlay
@@ -585,6 +766,10 @@ func main() {
 		topology.Stop()
 	case "Restart":
 		topology.Stop()
-		topology.Start()
+		if err := topology.Start(); err != nil {
+			panic(err)
+		}
+	case "Test":
+		topology.Test()
 	}
 }
