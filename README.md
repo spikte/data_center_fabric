@@ -69,3 +69,9 @@ Start the lab:
 ```
 
 The controller also supports `Stop` and `Restart` action.
+
+## Testing
+
+```bash
+./controller/dc_controller -path datacenter.yml -action Test
+```
